@@ -1,5 +1,369 @@
 ---
 title: "Homework 8"
+author: Bryan Sandor, Merilyn Thomas, and Tyler White
 format: html
+editor_options: 
+  chunk_output_type: console
+execute:
+  warning: false
+  message: false
 ---
 
+# Previous Document (Homework 7)
+## Preamble
+The purpose of this homework is to practice with fitting linear models in `R`. The data is from the UCI Machine Learning Repository concerning bike sharing rentals, available [here](https://www4.stat.ncsu.edu/online/datasets/SeoulBikeData.csv). First we "summon" the necessary packages.
+
+```{r packages}
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(parsnip)
+library(workflows)
+library(broom)
+```
+
+
+## Reading Data
+We will read in the data directly from the source, rather than downloading it.
+
+```{r read_data}
+# an error results in this command, "fixed" by the call to "locale" command
+raw_bike_data <- read_csv(
+  "https://www4.stat.ncsu.edu/online/datasets/SeoulBikeData.csv",
+  locale = locale(encoding = "latin1")
+  )
+```
+
+## EDA
+### Tidying
+Before we start analysis, we will need to clean up the data.
+
+1. We begin by checking the data for missing values. The below command sums across all columns the counts of `NA` values.
+
+```{r missingness}
+colSums(is.na(raw_bike_data))
+```
+
+We observe there are no explicit `NA` values within the data.
+
+2. Now we check the data to ensure each of the variable values "make sense" in the context of the type.
+
+```{r column_types}
+summary(raw_bike_data)
+```
+
+Both numeric and categorical data appear to be in appropriate ranges.
+
+3. The date column was incorrectly read in as a `char` type so we will convert it to the appropriate `date` type. We use the `dmy` (for "day-month-year") command from the `lubridate` package.
+
+```{r convert_date_column}
+clean_bike_data <- raw_bike_data
+
+clean_bike_data$Date <- dmy(clean_bike_data$Date)
+
+head(clean_bike_data$Date)
+```
+
+4. Now we adjust the remaining `char` type variables to factors.
+
+```{r change_to_factors}
+clean_bike_data$Seasons <- as.factor(clean_bike_data$Seasons)
+clean_bike_data$Holiday <- as.factor(clean_bike_data$Holiday)
+clean_bike_data$`Functioning Day` <- as.factor(clean_bike_data$`Functioning Day`)
+
+clean_bike_data |> select(c(Seasons, Holiday, `Functioning Day`))
+```
+
+5. Finally, we will rename all the variables to more "friendly" names.
+
+```{r renaming}
+clean_bike_data <- clean_bike_data |> rename(
+  date = Date,
+  rent_count = `Rented Bike Count`,
+  hour = Hour,
+  temp = `Temperature(°C)`,
+  humidity = `Humidity(%)`,
+  wind_speed = `Wind speed (m/s)`,
+  visibility = `Visibility (10m)`,
+  dew_point = `Dew point temperature(°C)`,
+  sun_radiation = `Solar Radiation (MJ/m2)`,
+  rainfall = `Rainfall(mm)`,
+  snowfall = `Snowfall (cm)`,
+  season = Seasons,
+  holiday = Holiday,
+  functional_hour = `Functioning Day`
+)
+```
+
+### Fine-Tuning
+Now that the data is formatted ideally, we can do some basic analysis.
+
+6. First, let's observe summary statistics.
+
+```{r summary_stats}
+summary(clean_bike_data)
+```
+
+There are `295` observations occurring within a non-functional hour, rendering those observations irrelevant to our analysis, so we will need to remove them from our data set.
+
+```{r remove_bad_observations}
+functional_bike_data <- clean_bike_data |> filter(
+  functional_hour == "Yes"
+)
+
+summary(functional_bike_data$functional_hour)
+```
+
+7. Now that we have a fully functional, tidied data set, let's perform some analyses on it. We will summarize across the hours so each day has one observation.
+
+```{r target_data_set}
+bike_data <- functional_bike_data |> group_by(date, season, holiday) |>
+  summarize(
+    total_rent_count = sum(rent_count),
+    total_rainfall = sum(rainfall),
+    total_snowfall = sum(snowfall),
+    mean_temp = mean(temp),
+    mean_humidity = mean(humidity),
+    mean_wind_speed = mean(wind_speed),
+    mean_visibility = mean(visibility),
+    mean_dew_point = mean(dew_point),
+    mean_sun_radiation = mean(sun_radiation)
+  )
+
+head(bike_data)
+```
+
+### Analysis
+#### Numeric Summary
+8. We have the data set we need, so let's perform some basic analyses on them, beginning with a simple summary.
+
+```{r final_summary}
+summary(bike_data)
+```
+
+#### Graphs
+Now let's examine some plots. First, let's relate rainfall to total rentals.
+
+```{r rainfall_v_rentals_graph}
+ggplot(data = bike_data,
+       aes(x = total_rainfall, y = total_rent_count)) +
+  geom_jitter(width = 1) +
+  geom_smooth(method = lm) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 40000)) +
+  labs(x = "Total Rainfall (mm)",
+       y = "Total Bike Rentals",
+       title = "Rainfall vs Bike Rentals")
+```
+
+It looks like an inverse relation exists between rainfall and rentals. Now let's do the same but for snowfall. One would assume a similar relationship exists.
+
+```{r snowfall_v_rentals_graph}
+ggplot(data = bike_data,
+       aes(x = total_snowfall, y = total_rent_count)) +
+  geom_jitter(width = 1) +
+  geom_smooth(method = lm) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 40000)) +
+  labs(x = "Total Snowfall (cm)",
+       y = "Total Bike Rentals",
+       title = "Snowfall vs Bike Rentals")
+```
+
+Not surprisingly, this seems more stark; after all, snow is more dangerous for bike rides and some people even prefer to ride in the rain. Let's examine the rentals across each of the four seasons.
+
+```{r seasonal_rentals_graph}
+ggplot(data = bike_data,
+       aes(x = season, y = total_rent_count)) +
+  geom_col() +
+  labs(x = "Season",
+       y = "Total Bike Rentals",
+       title = "Seasonal Bike Rentals")
+```
+
+It appears people prefer sunny weather or cooler, but not frigid, temperatures, and this is practical. Let's touch on this last thought with two more comparisons: solar radiation and temperature, respectively.
+
+```{r solar_radiation_vs_rentals_graph}
+ggplot(data = bike_data,
+       aes(x = mean_sun_radiation, y = total_rent_count)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Solar Radiation (MJ/m^2)",
+       y = "Total Bike Rentals",
+       title = "Solar Radiation vs Bike Rentals")
+```
+
+Indeed, sunnier weather seems directly proportional to bike rentals, albeit not within as narrow a band as our rain or snow fall.
+
+```{r temperature_vs_rentals_graph}
+ggplot(data = bike_data,
+       aes(x = mean_temp, y = total_rent_count)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  labs(x = "Temperature (C)",
+       y = "Total Bike Rentals",
+       title = "Temperature vs Bike Rentals")
+```
+
+As with the sunnier weather, temperature seems directly proportional to bike rentals.
+
+#### Correlation
+Finally, let's explore combinations of correlations among numeric variables.
+
+```{r correlation}
+cor(bike_data[,4:12]) # uses just the numeric columns
+```
+
+The highest correlations with the number of rentals appears to be temperature, solar radiation, and a variable we did not explore in the graphs: dew point, with the weakest as humidity, visibility, and wind speed. It surprises the author that rainfall and snowfall were not more highly correlated.
+
+## Modelling
+### Split the Data
+First we split the data into a training and test set (75/25 split), stratified across the seasons, creating a 10 fold cross-validation (CV) split.
+
+```{r data_split}
+set.seed(44)
+
+bike_split <- initial_split(bike_data,
+                            prop = 0.75,
+                            strata = season)
+
+train_data <- training(bike_split)
+test_data <- testing(bike_split)
+
+cv_folds <- vfold_cv(train_data,
+                     v = 10,
+                     strata = season)
+```
+
+### Fitting MLR Models
+#### First Recipe
+For our first recipe, we want to remove the `date` variable as a predictor, but use it to create a new variable designating whether the date fell on a weekday or weekend. Then, we standardize all the numeric data (converts all the data to a $z$-score for its corresponding variable) and craft a dummy variable for the season, holiday, and our new workweek factors.
+
+```{r first_recipe}
+bike_rec_1 <- recipe(total_rent_count ~ .,
+                     data = train_data) |>
+  update_role(date,
+              new_role = "date") |> # removes date as predictor
+  step_date(date,
+            features = "dow",
+            label = TRUE) |> # returns the day of the week (dow)
+  step_mutate(workweek = factor(
+    if_else(date_dow %in% c("Sat", "Sun"),
+    "weekend",
+    "weekday"))) |> # creates new variable as factor for weekend or weekday
+  step_rm(date_dow) |> # removes temporary variable from previous step
+  step_normalize(all_numeric_predictors()) |> # standardizes all numeric data
+  step_dummy(all_nominal_predictors()) # "dummifies" all categorical data
+
+summary(bike_rec_1) # indicates roles of variables
+```
+
+#### Second Recipe
+The second recipe is identical to the first, except we add in interactions between seasons and holiday; seasons and temp; and temp and rainfall.
+
+```{r second_recipe}
+bike_rec_2 <- recipe(total_rent_count ~ .,
+                     data = train_data) |>
+  update_role(date,
+              new_role = "date") |>
+  step_date(date,
+            features = "dow",
+            label = TRUE) |>
+  step_mutate(workweek = factor(
+    if_else(date_dow %in% c("Sat", "Sun"),
+    "weekend",
+    "weekday"))) |>
+  step_rm(date_dow) |>
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) |> # end of first recipe
+  step_interact( ~ starts_with("season"):starts_with("holiday")) |>
+  step_interact( ~ starts_with("season"):starts_with("mean_temp")) |>
+  step_interact( ~ starts_with("mean_temp"):starts_with("total_rainfall"))
+```
+
+#### Third Recipe
+The last recipe is identical to the second, except we now include quadratic terms for each of the 10 numeric predictors.
+
+```{r third_recipe}
+bike_rec_3 <- recipe(total_rent_count ~ .,
+                     data = train_data) |>
+  update_role(date,
+              new_role = "date") |>
+  step_date(date,
+            features = "dow",
+            label = TRUE) |>
+  step_mutate(workweek = factor(
+    if_else(date_dow %in% c("Sat", "Sun"),
+    "weekend",
+    "weekday"))) |>
+  step_rm(date_dow) |>
+  step_poly(all_numeric_predictors(), degree = 2) |> # adds quadratic terms
+  step_normalize(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) |> 
+  step_interact( ~ starts_with("season"):starts_with("holiday")) |>
+  step_interact( ~ starts_with("season"):starts_with("mean_temp")) |>
+  step_interact( ~ starts_with("mean_temp"):starts_with("total_rainfall"))
+```
+
+#### Model Fit
+Now we can set up our linear model fit to use the "lm" engine.
+
+```{r lm_fit}
+bike_lm <- linear_reg() |>
+  set_engine("lm")
+```
+
+We continue by making workflows for each of the three recipes.
+
+```{r workflows}
+bike_workflow_1 <- workflow() |>
+  add_model(bike_lm) |>
+  add_recipe(bike_rec_1)
+  
+bike_workflow_2 <- workflow() |>
+  add_model(bike_lm) |> 
+  add_recipe(bike_rec_2)
+  
+bike_workflow_3 <- workflow() |>
+  add_model(bike_lm) |> 
+  add_recipe(bike_rec_3)
+```
+
+Then we fit the models using our previous 10 fold CV.
+
+```{r fit_models}
+cv_bike_1 <- bike_workflow_1 |>
+  fit_resamples(cv_folds)
+
+cv_bike_2 <- bike_workflow_2 |>
+  fit_resamples(cv_folds)
+
+cv_bike_3 <- bike_workflow_3 |>
+  fit_resamples(cv_folds)
+```
+
+We need to see which of the three models works best by examining the CV errors.
+
+```{r CV_errors}
+collect_metrics(cv_bike_1)
+collect_metrics(cv_bike_2)
+collect_metrics(cv_bike_3)
+```
+
+## Final Model
+We see the third model has the lowest root-mean squared error (RMSE) and thus we will use it as a model to fit on the entire training set.
+
+```{r best_model_fit}
+bike_best_model <- bike_workflow_3 |>
+  last_fit(bike_split)
+
+collect_metrics(bike_best_model)
+```
+
+Finally, to "visualize" the model, we will extract the coefficients.
+
+```{r model_coefficients}
+bike_best_model |> extract_fit_parsnip() |>
+  tidy() |>
+  print(n = Inf)
+```
+
+# Homework 8 (Current Document)
