@@ -2,12 +2,19 @@
 title: "Homework 8"
 author: Bryan Sandor, Merilyn Thomas, and Tyler White
 format: html
+toc: true
+toc_depth: 6
+toc_float:
+  toc_collapse: false
 editor_options: 
   chunk_output_type: console
 execute:
   warning: false
   message: false
+#  eval: false
 ---
+
+__NOTE: HOMEWORK 8 IS APPENDED TOWARDS THE END OF THIS DOCUMENT! Please use the table of contents to the right to skip to that portion.__
 
 # Previous Document (Homework 7)
 ## Preamble
@@ -329,7 +336,9 @@ bike_workflow_3 <- workflow() |>
 
 Then we fit the models using our previous 10 fold CV.
 
-```{r fit_models}
+```{r fit_models, cache = TRUE}
+# option cache = TRUE only reruns this chunk, while rendering, if any code has changed
+
 cv_bike_1 <- bike_workflow_1 |>
   fit_resamples(cv_folds)
 
@@ -348,22 +357,199 @@ collect_metrics(cv_bike_2)
 collect_metrics(cv_bike_3)
 ```
 
-## Final Model
+## Final MLR Model
 We see the third model has the lowest root-mean squared error (RMSE) and thus we will use it as a model to fit on the entire training set.
 
 ```{r best_model_fit}
 bike_best_model <- bike_workflow_3 |>
-  last_fit(bike_split)
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
 
 collect_metrics(bike_best_model)
 ```
 
 Finally, to "visualize" the model, we will extract the coefficients.
 
-```{r model_coefficients}
+```{r mlr_model_coefficients}
 bike_best_model |> extract_fit_parsnip() |>
   tidy() |>
   print(n = Inf)
 ```
 
 # Homework 8 (Current Document)
+We add to our previous models from Homework 7, using modifications to the first recipe. First we add the necessary libraries.
+
+```{r packages_2}
+library(glmnet)
+library(rpart.plot)
+```
+
+## LASSO
+We begin with a least absolute shrinkage and selection operator (LASSO) model, again, using our first recipe from last week's assignment.
+
+```{r lasso_model}
+bike_lasso <- linear_reg(penalty = tune(), mixture = 1) |> # tuning parameters
+  set_engine("glmnet")
+```
+
+Now we create the workflow and ensure the correct processes are followed.
+
+```{r lasso_workflow}
+bike_lasso_workflow <- workflow() |>
+  add_recipe(bike_rec_1) |> # we use the first recipe
+  add_model(bike_lasso)
+
+bike_lasso_workflow
+```
+
+Then we create a grid.
+
+```{r lasso_grid, cache = TRUE}
+bike_lasso_grid <- bike_lasso_workflow |>
+  tune_grid(resamples = cv_folds,
+            grid = grid_regular(penalty(), levels = 200),
+            save_workflow = TRUE)
+
+bike_lasso_grid
+```
+
+Now examine the particulars for the first few levels.
+
+```{r lasso_parameters}
+bike_lasso_grid |>
+  collect_metrics() |>
+  filter(.metric == "rmse")
+```
+
+Visualize it through a graph to get a better picture of the parameters.
+
+```{r lasso_graph}
+bike_lasso_grid |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_line()
+```
+
+_N.B._: As advised in the homework assignment, the RMSE values are uniform, as this graph demonstrates.
+
+Now we select the "best" model.
+
+```{r lasso_best}
+lasso_lowest_rmse <- bike_lasso_grid |>
+  select_best(metric = "rmse")
+
+lasso_lowest_rmse
+```
+
+Fit it to the training data.
+
+```{r lasso_best_fit}
+bike_lasso_final <- bike_lasso_workflow |>
+  finalize_workflow(lasso_lowest_rmse) |>
+  fit(train_data)
+
+tidy(bike_lasso_final)
+```
+
+Recover the errors.
+
+```{r lasso_metrics}
+bike_lasso_workflow |>
+  finalize_workflow(lasso_lowest_rmse) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
+  collect_metrics()
+```
+
+Now let's examine the coefficients.
+
+```{r lasso_model_coefficients}
+bike_lasso_final |> extract_fit_parsnip() |>
+  tidy() |>
+  print(n = Inf)
+```
+
+## Regression Tree
+Now we try our hand at a regression tree model, with tuning.
+
+```{r tree_model}
+bike_tree <- decision_tree(tree_depth = tune(),
+                          min_n = 20,
+                          cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+```
+
+Create the workflow.
+
+```{r tree_workflow}
+bike_tree_workflow <- workflow() |>
+  add_recipe(bike_rec_1) |> # again we use the first recipe from the MLR model
+  add_model(bike_tree)
+```
+
+Fit the workflow to our cross-validation folds and collect our metrics, and sort ascending on the RMSE.
+
+```{r tree_grid, cache = TRUE}
+bike_tree_fits <- bike_tree_workflow |> 
+  tune_grid(resamples = cv_folds) #uses defaults from dials
+
+bike_tree_fits |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+```
+
+We can also visualize them.
+
+```{r tree_params_graph}
+bike_tree_fits |>
+  collect_metrics() |>
+  mutate(tree_depth = factor(tree_depth)) |>
+  ggplot(aes(cost_complexity, mean, color = tree_depth)) +
+  geom_line(size = 1.5, alpha = 0.6) +
+  geom_point(size = 2) +
+  facet_wrap(~ .metric, scales = "free", nrow = 2) +
+  scale_x_log10(labels = scales::label_number()) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)
+```
+
+Now let's select the best model.
+
+```{r tree_best}
+bike_tree_best_params <- select_best(bike_tree_fits, metric = "rmse")
+
+bike_tree_best_params
+```
+
+Then fit to the training set.
+
+```{r tree_best_fit}
+bike_tree_final <- bike_tree_workflow |>
+  finalize_workflow(bike_tree_best_params) |>
+  fit(train_data)
+```
+
+Now recover the errors associated with this model.
+
+```{r tree_metrics}
+bike_tree_workflow |>
+  finalize_workflow(bike_tree_best_params) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
+  collect_metrics()
+```
+
+Finally, let's see a visual of this actual tree.
+
+```{r final_tree_model}
+bike_tree_final |>
+  extract_fit_engine() |>
+  rpart.plot::rpart.plot(roundint = FALSE)
+```
+
+## Bagged Tree
+We continue now with a bagged tree model, again tuned.
+
+## Random Forest
+
+
+# Conclusion
