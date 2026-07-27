@@ -381,6 +381,7 @@ We add to our previous models from Homework 7, using modifications to the first 
 ```{r packages_2}
 library(glmnet)
 library(rpart.plot)
+library(baguette)
 ```
 
 ## LASSO
@@ -469,7 +470,7 @@ bike_lasso_final |> extract_fit_parsnip() |>
 ```
 
 ## Regression Tree
-Now we try our hand at a regression tree model, with tuning.
+Now we try our hand at a regression tree model, with tuning, in this case on both `tree_depth` and `cost_complexity`.
 
 ```{r tree_model}
 bike_tree <- decision_tree(tree_depth = tune(),
@@ -526,7 +527,7 @@ Then fit to the training set.
 ```{r tree_best_fit}
 bike_tree_final <- bike_tree_workflow |>
   finalize_workflow(bike_tree_best_params) |>
-  fit(train_data)
+  last_fit(bike_split)
 ```
 
 Now recover the errors associated with this model.
@@ -547,9 +548,77 @@ bike_tree_final |>
 ```
 
 ## Bagged Tree
-We continue now with a bagged tree model, again tuned.
+We continue now with a bagged tree model, again tuned, in this case again on both `tree_depth` and `cost_complexity`.
+
+```{r bagged_tree_model}
+bike_bag <- bag_tree(tree_depth = tune(),
+                     min_n = 20,
+                     cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+```
+
+Proceed with the workflow.
+
+```{r bag_workflow}
+bike_bag_workflow <- workflow() |>
+  add_recipe(bike_rec_1) |> # again using our first recipe from the MLR model
+  add_model(bike_bag)
+```
+
+Fit to our CV folds and collect the metrics, again sorting ascending on the RMSE.
+
+```{r bag_grid, cache = TRUE}
+bike_bag_fit <- bike_bag_workflow |>
+  tune_grid(resamples = cv_folds)
+
+bike_bag_fit |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+```
+
+Let us now recover our best tuning parameter.
+
+```{r bag_best}
+bike_bag_best_params <- select_best(bike_bag_fit,
+                                    metric = "rmse")
+
+bike_bag_best_params
+```
+
+Now refit on the entire training set with this optimal tuning parameter.
+
+```{r bag_best_fit}
+# bike_bag_final <- bike_bag_workflow |>
+#   finalize_workflow(bike_bag_best_params) |>
+#   last_fit(bike_split)
+
+bike_bag_final <- bike_bag_workflow |>
+  finalize_workflow(bike_bag_best_params)
+
+bag_final_fit <- bike_bag_final |>
+  last_fit(bike_split)
+```
+
+Now examine the error metrics.
+
+```{r bag_metrics}
+bike_bag_workflow |>
+  finalize_workflow(bike_bag_best_params) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
+  collect_metrics()
+```
+
+```{r final_bag_plot}
+bike_bag_full_fit <- bike_bag_final |>
+  fit(train_data)
+
+bike_bag_full_fit
+```
 
 ## Random Forest
-
+Our final candidate model will be a tuned random forest model.
 
 # Conclusion
+We now compare the RMSE and MAE for all the models.
