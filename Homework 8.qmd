@@ -143,6 +143,10 @@ bikeDfSummary
   
 ```
 
+```{r}
+head(bikeDfSummary)
+```
+
 
 ### Summary Stats of New Data:
 
@@ -225,7 +229,6 @@ recipe1 = recipe(data = bikeTrain, sumBikeCount ~.) |>
   step_normalize(all_numeric())
   
 ```
-
 
 
 
@@ -502,6 +505,7 @@ cells_res <-
 
 
 ```
+
 
 ## Compare All Models
 
