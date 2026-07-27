@@ -3,6 +3,9 @@ title: "Homework-8"
 author: Bryan Sandor, Merilyn Thomas, and Tyler White
 format: html
 editor: visual
+execute:
+  warning: false
+  message: false
 ---
 
 ## From HW 7
@@ -369,3 +372,327 @@ final_model_coeffs
 ```
 
 ## HW 8 Begins
+
+For the overall best model, fit it to the entire data set!
+
+```{r}
+library(glmnet)
+library(baguette)
+library(ranger)
+library(rpart.plot)
+```
+
+
+In this section, this is continuation with the previous code and analysis done in homework 7. Using the first recipe that was written, several new models are added. Adding a **LASSO model** to fit on our bike data. In this case, use linear regression, but using the "glmnet" engine instead of "lm".
+
+```{r LASSO spec}
+LASSO_recipe <- bike_recipe_1
+
+LASSO_spec <- linear_reg(penalty = tune(), mixture = 1) |>
+  set_engine("glmnet")
+```
+
+Next, create the workflow.
+```{r LASSO wkf}
+
+LASSO_wkf <- workflow() |>
+  add_recipe(LASSO_recipe) |>
+  add_model(LASSO_spec)
+LASSO_wkf
+```
+
+Below, use the `tune_grid()` function. This function allows to fit the model to CV folds but specify the set of tuning parameters to consider.
+```{r LASSO grid}
+set.seed(75)
+
+LASSO_grid <- LASSO_wkf |>
+  tune_grid(resamples = bike_folds,
+            grid = grid_regular(penalty(), levels = 200)) 
+```
+
+Now, these metrics are computed across the folds for each the 200 values of the tuning parameter.
+```{r LASSO metric}
+LASSO_grid |>
+  collect_metrics() |>
+  filter(.metric == "rmse")
+```
+
+Find the best model from the LASSO models and fit it to the entire training data set and see how it predicts on the test set.
+
+```{r LASSO finalize & fit}
+best_LASSO <- LASSO_grid |> 
+  select_best(metric = "rmse")
+
+LASSO_final <- LASSO_wkf |> 
+  finalize_workflow(best_LASSO) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
+```
+
+
+## Regression Tree Model
+
+Repeat the same steps, but instead use a **regression tree model**. First, define the recipe and model specifications.
+```{r Tree spec}
+
+tree_recipe <- bike_recipe_1
+
+tree_mod <- decision_tree(tree_depth = tune(),
+                          min_n = 20,
+                          cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+```
+
+Next, create the workflow.
+
+```{r Tree wkf}
+tree_wkf <- workflow() |>
+  add_recipe(tree_recipe) |>
+  add_model(tree_mod)
+tree_wkf
+```
+
+Then, fit the workflow to CV folds.
+```{r Tree fit wkf to folds}
+set.seed(75)
+
+tree_grid <- grid_regular(cost_complexity(),
+                          tree_depth(),
+                          levels = c(10, 5))
+
+tree_fits <- tree_wkf |> 
+  tune_grid(resamples = bike_folds,
+            grid = tree_grid)
+tree_fits
+```
+
+Now that the model has been tuned, collect metrics to see how the models performed.
+
+```{r Tree metrics}
+tree_fits |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+
+best_tree <- tree_fits |> 
+  select_best(metric = "rmse")
+best_tree
+```
+
+Finally, finalize the workflow and fit it to the entire training data set.
+
+```{r Tree finalize & fit}
+tree_final <- tree_wkf |>
+  finalize_workflow(best_tree) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
+
+tree_final |>
+  collect_metrics()
+```
+
+
+## Bagged Tree Model
+
+Repeat the same steps again, but instead use a **bagged tree model**. First, define the recipe, model specifications, and create the workflow.
+```{r Bag spec & wkf}
+bag_recipe <- bike_recipe_1
+
+# Model specification
+bag_spec <- bag_tree(tree_depth = 5, min_n = 10, cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+# Workflow
+bag_wkf <- workflow() |>
+  add_recipe(bag_recipe) |>
+  add_model(bag_spec)
+bag_wkf
+```
+
+Next, fit the workflow to the CV folds and check the metrics across the folds.
+```{r Bag fit to folds & check metrics}
+set.seed(75)
+
+bag_grid <- grid_regular(cost_complexity(), levels = 15)
+
+bag_fit <- bag_wkf |>
+  tune_grid(resamples = bike_folds,
+            grid = bag_grid)
+
+# Collect metrics
+bag_fit |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+
+# Check metric performance
+best_bag <- bag_fit |> 
+  select_best(metric = "rmse")
+best_bag
+```
+
+Finally, finalize and fit the model onto the training data set.
+```{r Bag finalize & fit}
+bag_final <- bag_wkf |>
+  finalize_workflow(best_bag) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
+
+bag_final |>
+  collect_metrics()
+```
+
+
+## Random Forest Model
+
+Repeat the same steps again, but instead use a **random forest model**. First, define the recipe, model specifications, and create the workflow.
+```{r RF spec & wkf}
+rf_recipe <- bike_recipe_1
+
+# Model specification
+rf_spec <- rand_forest(mtry = tune()) |>
+  set_engine("ranger", importance = "impurity") |> # Added level for importance
+  set_mode("regression")
+
+# Workflow
+rf_wkf <- workflow() |>
+  add_recipe(rf_recipe) |>
+  add_model(rf_spec)
+rf_wkf
+```
+
+Next, fit the workflow to the CV folds and checking the metrics across the folds.
+```{r RF fit to folds & check metrics}
+set.seed(75)
+
+rf_fit <- rf_wkf |>
+  tune_grid(resamples = bike_folds,
+            grid = 7)
+
+# Collect metrics
+rf_fit |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+
+# Check metric performance
+best_rf <- rf_fit |> 
+  select_best(metric = "rmse")
+best_rf
+```
+
+Finally, finalize and fit the model onto the training data set.
+```{r RF finalize & fit}
+rf_final <- rf_wkf |>
+  finalize_workflow(best_rf) |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
+
+rf_final |>
+  collect_metrics()
+```
+
+
+## Comparing All Final Models
+
+In this last section, compare all final models on the test set using both RMSE and MAE (mean absolute error).
+```{r}
+# Re-fit MLR with both metrics included
+mlr_final <- bike_wf3 |>
+  last_fit(bike_split, metrics = metric_set(rmse, mae))
+
+all_metrics <- rbind(
+  mlr_final |>
+    collect_metrics() |>
+    mutate(Model = "MLR", .before = ".metric"),
+  LASSO_final |>
+    collect_metrics() |>
+    mutate(Model = "LASSO", .before = ".metric"),
+  tree_final |>
+    collect_metrics() |>
+    mutate(Model = "REGRESSION_TREE", .before = ".metric"),
+  bag_final |>
+    collect_metrics() |>
+    mutate(Model = "BAGGED_TREE", .before = ".metric"),
+  rf_final |>
+    collect_metrics() |>
+    mutate(Model = "RANDOM_FOREST", .before = ".metric")
+)
+
+all_metrics |>
+  filter(.metric %in% c("rmse", "mae")) |> 
+  arrange(.estimate)
+```
+
+According to RMSE, we can see that the best model for our data is the Random Forest Model!
+
+## Final Model Fits & Summaries
+
+For the LASSO and MLR models, report the final coefficient tables.
+```{r coefficient tables}
+tidy(mlr_final |> extract_fit_parsnip()) |> arrange(desc(abs(estimate))) # MLR
+tidy(LASSO_final |> extract_fit_parsnip()) |> arrange(desc(abs(estimate))) # LASSO
+```
+
+For the regression tree model, create a plot of the final fit.
+```{r Tree final fit plot}
+tree_obj <- tree_final |> 
+   extract_workflow() |> 
+   extract_fit_engine()
+ 
+ # Plot
+ rpart.plot(tree_obj, 
+            roundint = FALSE,
+            main = "Regression Tree Final Fit")
+```
+
+For the bagged tree and random forest models, produce variable importance plots.
+```{r Bagged variable importance}
+# Extract final model fit
+bag_final_model <- bag_final |> extract_workflow() |> extract_fit_engine()
+
+bag_final_model$imp |>
+  mutate(term = factor(term, levels = term)) |> 
+  ggplot(aes(x = term, y = value)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Bagged Tree Variable Importance",
+       x = "Variables",
+       y = "Importance")
+```
+
+```{r RF variable importance}
+# Extract final model fit
+rf_final_model <- rf_final |> extract_workflow() |> extract_fit_engine()
+
+rf_import <- rf_final_model$variable.importance |> 
+  sort(decreasing = TRUE)
+
+# Tibble for plotting
+rf_import_df <- tibble(
+  variable = names(rf_import),
+  importance = rf_import
+)
+
+rf_import_df |> 
+  ggplot(aes(x = reorder(variable, importance), y = importance)) +
+  geom_col(fill = "forestgreen") +
+  coord_flip() +
+  labs(title = "Random Forest Variable Importance",
+       x = "Variables",
+       y = "Importance")
+```
+In both the bagged tree and random forest variable importance plots above, the most important predictor for the number of bike rentals is the average temperature (c) outside.
+
+Fit the overall best model to the entire data set. This will be the Random Forest Model.
+```{r}
+final_rf_wkf <- rf_wkf |>
+  finalize_workflow(best_rf)
+
+final_rf_fit <- final_rf_wkf |>
+  fit(data = daily_bike_data)
+
+final_rf_model <- final_rf_fit |>
+  extract_fit_engine()
+
+final_rf_model
+```
+The final random forest model is a regression model that was trained on the full bike data set using 500 trees. This model is able to predict daily bike rental counts pretty accurately, with about 92.2% of the variance in daily bike rentals. It also achieved an Out-of-Bag (OOB) Root Mean Squared Error (RMSE) of roughly 2,767 bikes, which is highly consistent with the error observed on our test set. As seen previously in the variable importance plot for this model, the average temperature (c) seems to be the most important variable in the data set when predicting daily bike rental counts.
