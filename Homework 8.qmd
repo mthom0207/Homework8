@@ -3,3 +3,512 @@ title: "Homework 8"
 format: html
 ---
 
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+```
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(lubridate)
+library(corrplot)
+library(tidymodels)
+library(glmnet)
+library(tree)
+library(rpart.plot)
+library(baguette)
+library(ranger)
+```
+
+## Read Data
+
+```{r}
+bikeDf = read.csv("SeoulBikeData.csv", skip = 1, col.names = c("Date",
+                                                               "RentedBikeCount",
+                                                               "Hour",
+                                                               "Temperature",
+                                                               "Humidity",
+                                                               "WindSpeed",
+                                                               "Visibility",
+                                                               "DewPoint",
+                                                               "SolarRadiation",
+                                                               "Rainfall",
+                                                               "Snowfall",
+                                                               "Seasons",
+                                                               "Holiday",
+                                                               "FunctioningDay"))
+
+head(bikeDf)
+```
+
+## EDA
+
+### Check Variable Types and Cast Proper Variable Types
+
+```{r}
+print(str(bikeDf))
+```
+"Holiday", "Seasons", and "FunctioningHoliday" should be factors. "Date" should be a DateTime.
+
+```{r}
+bikeDf = as.tibble(bikeDf) |> mutate(Holiday = as.factor(Holiday),
+                                     Seasons = as.factor(Seasons),
+                                     FunctioningDay = as.factor(FunctioningDay),
+                                     Date = as.Date(Date))
+
+head(bikeDf)
+```
+
+### Assess Missingness
+
+```{r}
+
+sum_na <- function(column){
+  sum(is.na(column))
+}
+bikeDf_na <- bikeDf |>
+  summarize(across(everything(), sum_na))
+
+bikeDf_na
+
+```
+No data is missing! Lovely
+
+Numeric Summary Statistics:
+
+```{r}
+numVarSummaries = bikeDf |> summarize(across(where(is.numeric), 
+                                      list("mean" = mean, "standardDeviation" = sd),
+                                      .names = "{.fn}_{.col}"))
+
+numVarSummaries
+  
+```
+### Scatter Plot between numeric variables
+
+```{r}
+corrplot(cor(bikeDf |> select((where(is.numeric)))))
+```
+### Box Graphs for Factors
+
+```{r}
+
+ggplot(data = bikeDf |> select(Holiday) |>
+         group_by(Holiday), aes(x = Holiday)) + geom_bar()
+
+ggplot(data = bikeDf |> select(Seasons) |>
+         group_by(Seasons), aes(x = Seasons)) + geom_bar()
+
+ggplot(data = bikeDf |> select(FunctioningDay) |>
+         group_by(FunctioningDay), aes(x = FunctioningDay)) + geom_bar()
+```
+
+FuntioningDay and Holiday Variables are skewed towards "No" and "No Holiday"
+
+### Scatter Plots:
+
+```{r}
+
+g = ggplot(data = bikeDf, aes(y = RentedBikeCount))
+
+g + geom_point(aes(x = Temperature,color = Seasons))
+
+g + geom_point(aes(x = Temperature,color = FunctioningDay))
+
+```
+It looks like when there is not a  Functioning Day, the bike count drops to 0. Let's subset these out. 
+
+### Generate Summary Data:
+
+```{r}
+bikeDfSummary = bikeDf |>
+  filter(FunctioningDay == "Yes") |>
+  group_by(Date, Seasons, Holiday) |>
+  summarize(sumBikeCount = sum(RentedBikeCount),
+            sumRainfall = sum(Rainfall),
+            sumSnowfall = sum(Snowfall),
+            meanTemperature = mean(Temperature),
+            meanHumidity = mean(Humidity),
+            meanWindSpeed = mean(WindSpeed),
+            meanVisibility = mean(Visibility),
+            meanDewPoint = mean(DewPoint),
+            meanSolarRadiation = mean(SolarRadiation),
+            )
+
+bikeDfSummary
+  
+```
+
+
+### Summary Stats of New Data:
+
+```{r}
+numVarSummaries = bikeDfSummary |> ungroup() |> summarize(across(where(is.numeric), 
+                                      list("mean" = mean, "standardDeviation" = sd),
+                                      .names = "{.fn}_{.col}"))
+
+numVarSummaries
+```
+
+
+### A few scatter looking at predictor variables vs bike count:
+
+```{r}
+g = ggplot(data = bikeDfSummary, aes(y = sumBikeCount))
+
+g + geom_point(aes(x = meanTemperature,color = Seasons))
+
+g + geom_point(aes(x = meanTemperature,color = Holiday))
+
+g + geom_point(aes(x = meanTemperature,color = Holiday))
+```
+Certainly the least amount of bikes being rented during the cold weather (winter) and the most being in warm weather (to a degree, until it's too hot). Relationship between temp and bike count appears similar during fall and spring.
+
+### Correlation between numeric variables
+
+```{r}
+numVars = bikeDfSummary |> ungroup() |> select((where(is.numeric)))
+
+print(cor(numVars))
+
+corrplot(cor(numVars))
+
+```
+Highest positive correlated variables with bike count are
+- meanTemperature
+- mewsDewPoint (Also highly correlated with meanTemperature)
+- meanSolar Radaition
+
+It seems like people like riding bikes during warm and sunny days.
+
+
+## Modeling
+
+### Create Train / Test Split
+```{r}
+head(bikeDfSummary)
+```
+
+
+```{r}
+
+bikeDfSummary = bikeDfSummary |> ungroup()
+
+bikeSplit = initial_split(bikeDfSummary, prop = .75, strata = Seasons)
+bikeTrain = training(bikeSplit)
+bikeTest = testing(bikeSplit)
+```
+
+
+### Create CV Splits
+
+```{r}
+bikeCVFolds = vfold_cv(bikeTrain, 10)
+```
+
+
+### First Recipe for Cleaning Data
+
+
+```{r}
+
+
+
+recipe1 = recipe(data = bikeTrain, sumBikeCount ~.) |> 
+  step_mutate(isWeekend = factor(ifelse(weekdays(Date) %in% c("Saturday", "Sunday"), "N", "Y"))) |>
+  update_role(Date, new_role = "ID") |>
+  step_dummy(Seasons, isWeekend, Holiday) |>
+  step_normalize(all_numeric())
+  
+```
+
+
+
+
+### Add Interfactions to a new recipe
+
+```{r}
+recipe2 = recipe(data = bikeTrain, sumBikeCount ~.) |> 
+  step_mutate(isWeekend = factor(ifelse(weekdays(Date) %in% c("Saturday", "Sunday"), "N", "Y"))) |>
+  update_role(Date, new_role = "ID") |>
+  step_dummy(Seasons, isWeekend, Holiday) |>
+  step_normalize(all_numeric()) |>
+  step_interact(terms = ~ starts_with("Seasons"):starts_with("Holiday")) |>
+  step_interact(terms = ~ starts_with("Seasons"):meanTemperature) |>
+  step_interact(terms = ~ sumRainfall:meanTemperature)
+
+```
+
+
+### Add Quadratic Terms to Numeric Predictors
+
+```{r}
+recipe3 = recipe(data = bikeTrain, sumBikeCount ~.) |> 
+  step_mutate(isWeekend = factor(ifelse(weekdays(Date) %in% c("Saturday", "Sunday"), "N", "Y"))) |>
+  update_role(Date, new_role = "ID") |>
+  step_dummy(Seasons, isWeekend, Holiday) |>
+  step_normalize(all_numeric(), -all_outcomes()) |>
+  step_interact(terms = ~ starts_with("Seasons"):starts_with("Holiday")) |>
+  step_interact(terms = ~ starts_with("Seasons"):meanTemperature) |>
+  step_interact(terms = ~ sumRainfall:meanTemperature) |>
+  step_poly(all_of(c("meanTemperature", "meanHumidity", "meanWindSpeed",
+                    "meanDewPoint", "meanVisibility", "meanSolarRadiation",
+                    "sumRainfall", "sumSnowfall")),
+          degree = 2)
+  
+  
+
+
+```
+
+### Create MLR Model
+
+```{r}
+mlrModel <- linear_reg() |> set_engine("lm")
+```
+
+### Fit all 3 Models and Evaluate with 10 Fold CV
+
+```{r}
+
+bikeFitWorkflow1 = workflow() |>
+  add_recipe(recipe1) |>
+  add_model(mlrModel) |>
+  fit_resamples(bikeCVFolds)
+
+results1 = bikeFitWorkflow1 |> collect_metrics()
+
+results1
+
+```
+
+
+# Beginning of HW 8
+
+Objective:
+
+10 Fold CV for the following Models:
+-    LASSO + Coef Table
+-    Regression Tree + Plot of Final Tree
+-    Bagged Tree + Variable Importance Plot
+-    Random Forest + Variable Importance Plot
+
+## MLR Model
+
+```{r}
+
+mlrFitWorkflow = workflow() |>
+  add_recipe(recipe1) |>
+  add_model(mlrModel)
+
+
+MLR_final <-  mlrFitWorkflow |>
+  fit(bikeTrain)
+tidy(MLR_final)
+
+
+
+```
+
+
+## LASSO
+
+```{r}
+lassoModel <- linear_reg(penalty = tune(), mixture = 1) |>
+  set_engine("glmnet")
+
+lassoWorkflow <- workflow() |>
+  add_recipe(recipe1) |>
+  add_model(lassoModel)
+
+#A warning will occur for one value of the tuning parameter, safe to ignore
+LASSO_grid <- lassoWorkflow |>
+  tune_grid(resamples = bikeCVFolds,
+            grid = grid_regular(penalty(), levels = 200),
+            save_workflow = TRUE) 
+LASSO_grid
+
+
+LASSO_grid |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_line()
+
+```
+```{r}
+
+lowest_rmse <- LASSO_grid |>
+  select_best(metric = "rmse")
+lowest_rmse
+
+lassoWorkflow |>
+  finalize_workflow(lowest_rmse)
+
+#fit it to the entire training set to see the model fit
+LASSO_final <- lassoWorkflow |>
+  finalize_workflow(lowest_rmse) |>
+  fit(bikeTrain)
+tidy(LASSO_final)
+
+
+```
+
+## Regression Tree
+
+```{r}
+
+## Model Spec
+treeModel <- decision_tree(tree_depth = tune(),
+                          min_n = 20,
+                          cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+## Workflow
+tree_wkf <- workflow() |>
+  add_recipe(recipe1) |>
+  add_model(treeModel)
+
+tree_grid <- grid_regular(cost_complexity(),
+                          tree_depth(),
+                          levels = c(10, 5))
+
+tree_fits <- tree_wkf |> 
+  tune_grid(resamples = bikeCVFolds,
+            grid = tree_grid)
+
+tree_fits |>
+  collect_metrics()
+
+
+```
+
+### Extract Best Fit:
+
+```{r}
+tree_best_params <- select_best(tree_fits, metric = "rmse")
+tree_best_params
+```
+### Obtain Best Model Fit on Training Set
+```{r}
+tree_final_wkf <- tree_wkf |>
+  finalize_workflow(tree_best_params)
+
+tree_final_fit <- tree_final_wkf |>
+  last_fit(bikeSplit)
+tree_final_fit
+
+tree_final_model <- extract_workflow(tree_final_fit) 
+tree_final_model
+
+tree_final_model |>
+  extract_fit_engine() |>
+  rpart.plot::rpart.plot(roundint = FALSE)
+```
+
+## Bagged Tree
+
+```{r}
+
+## Model
+
+baggedTreeModel <- bag_tree(tree_depth = 5, min_n = 10, cost_complexity = tune()) |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+## Workflow
+
+baggedTreeWorkflow = workflow() |>
+  add_recipe(recipe1) |>
+  add_model(baggedTreeModel)
+
+## Fit object with Cross Validaiton
+
+bag_fit <- baggedTreeWorkflow |>
+  tune_grid(resamples = bikeCVFolds, 
+            grid = grid_regular(cost_complexity(),
+                                levels = 15),
+            metrics = metric_set(rmse, mae))
+bag_fit
+
+## Obtain Best Fit
+
+bag_best_params <- select_best(bag_fit, metric = "rmse")
+bag_best_params
+
+## Fit Model on Best Fit
+
+bag_final_wkf <- baggedTreeWorkflow |>
+  finalize_workflow(bag_best_params)
+bag_final_fit <- bag_final_wkf |>
+  last_fit(bikeSplit, metrics = metric_set(rmse, mae))
+
+## Variable Importance Plot
+
+bag_final_model <- extract_fit_engine(bag_final_fit) 
+bag_final_model$imp |>
+  mutate(term = factor(term, levels = term)) |>
+  ggplot(aes(x = term, y = value)) + 
+  geom_bar(stat ="identity") +
+  coord_flip()
+```
+
+## Random Forest
+
+```{r}
+
+## Model Def
+
+rfModel <- rand_forest(mtry = tune()) |>
+  set_engine("ranger") |>
+  set_mode("regression")
+
+## Workflow
+
+rfWorkflow = workflow() |>
+  add_recipe(recipe1) |>
+  add_model(rfModel)
+
+## Fit on CV Object
+
+rf_fit <- rfWorkflow|>
+  tune_grid(resamples = bikeCVFolds, 
+            grid = 7,
+            metrics = metric_set(rmse, mae))
+
+## Obtain Best Paramters
+rf_best_params <- select_best(rf_fit, metric = "rmse")
+rf_best_params
+
+
+## Fit Test Set on Best Model
+rf_final_wkf <- rfWorkflow |>
+  finalize_workflow(rf_best_params)
+rf_final_fit <- bag_final_wkf |>
+  last_fit(bikeSplit, metrics = metric_set(rmse, mae))
+
+## Variable Importance Plot
+
+cells_res <-
+    rfWorkflow %>%
+    tune_grid(resamples = bikeCVFolds, 
+            grid = 7,
+            metrics = metric_set(rmse, mae))
+
+
+```
+
+## Compare All Models
+
+```{r}
+MLR_metrics = bikeFitWorkflow1 |> fit(bikeTest)
+
+MLR_metrics
+LASSO_metrics
+```
+
