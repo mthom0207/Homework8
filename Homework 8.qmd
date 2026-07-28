@@ -364,7 +364,9 @@ We see the third model has the lowest root-mean squared error (RMSE) and thus we
 bike_best_model <- bike_workflow_3 |>
   last_fit(bike_split, metrics = metric_set(rmse, mae))
 
-collect_metrics(bike_best_model)
+bike_best_mlr_metrics <- collect_metrics(bike_best_model)
+
+bike_best_mlr_metrics
 ```
 
 Finally, to "visualize" the model, we will extract the coefficients.
@@ -382,6 +384,7 @@ We add to our previous models from Homework 7, using modifications to the first 
 library(glmnet)
 library(rpart.plot)
 library(baguette)
+library(ranger)
 ```
 
 ## LASSO
@@ -455,10 +458,12 @@ tidy(bike_lasso_final)
 Recover the errors.
 
 ```{r lasso_metrics}
-bike_lasso_workflow |>
+bike_lasso_metrics <- bike_lasso_workflow |>
   finalize_workflow(lasso_lowest_rmse) |>
   last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
   collect_metrics()
+
+bike_lasso_metrics
 ```
 
 Now let's examine the coefficients.
@@ -533,10 +538,12 @@ bike_tree_final <- bike_tree_workflow |>
 Now recover the errors associated with this model.
 
 ```{r tree_metrics}
-bike_tree_workflow |>
+bike_tree_metrics <- bike_tree_workflow |>
   finalize_workflow(bike_tree_best_params) |>
   last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
   collect_metrics()
+
+bike_tree_metrics
 ```
 
 Finally, let's see a visual of this actual tree.
@@ -590,10 +597,6 @@ bike_bag_best_params
 Now refit on the entire training set with this optimal tuning parameter.
 
 ```{r bag_best_fit}
-# bike_bag_final <- bike_bag_workflow |>
-#   finalize_workflow(bike_bag_best_params) |>
-#   last_fit(bike_split)
-
 bike_bag_final <- bike_bag_workflow |>
   finalize_workflow(bike_bag_best_params)
 
@@ -604,21 +607,143 @@ bag_final_fit <- bike_bag_final |>
 Now examine the error metrics.
 
 ```{r bag_metrics}
-bike_bag_workflow |>
+bike_bag_metrics <- bike_bag_workflow |>
   finalize_workflow(bike_bag_best_params) |>
   last_fit(bike_split, metrics = metric_set(rmse, mae)) |>
   collect_metrics()
+
+bike_bag_metrics
 ```
+
+Now let us view a plot of (predictor) variable importance.
 
 ```{r final_bag_plot}
 bike_bag_full_fit <- bike_bag_final |>
   fit(train_data)
 
 bike_bag_full_fit
+
+bike_bag_final_model <- extract_fit_engine(bike_bag_full_fit) 
+
+bike_bag_final_model$imp |>
+  mutate(term = factor(term, levels = term)) |>
+  ggplot(aes(x = term, y = value)) + 
+  geom_bar(stat ="identity") +
+  coord_flip() +
+  labs(x = "Variable", y = "Value")
 ```
 
 ## Random Forest
-Our final candidate model will be a tuned random forest model.
+Our final candidate model will be a tuned (on the number of predictors) random forest model.
+
+```{r random_forest_model}
+bike_forest <- rand_forest(mtry = tune()) |>
+  set_engine("ranger",
+             importance = "impurity") |> # for graphing, later
+  set_mode("regression")
+```
+
+Now we create our workflow.
+
+```{r forest_workflow}
+bike_forest_workflow <- workflow() |>
+  add_recipe(bike_rec_1) |> # again, using the first recipe from HW 7
+  add_model(bike_forest)
+```
+
+Now we craft our grid and arrange (ascending) by our RMSE.
+
+```{r forest_grid, cache = TRUE}
+bike_forest_fit <- bike_forest_workflow |>
+  tune_grid(resamples = cv_folds, 
+            grid = 13) # 13 total predictor variables
+
+bike_forest_fit |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+```
+
+Now we recover the optimal parameter, with respect to RMSE.
+
+```{r forest_best}
+bike_forest_best_params <- select_best(bike_forest_fit,
+                                       metric = "rmse")
+
+bike_forest_best_params
+```
+
+Refit on the training data and collect error metrics.
+
+```{r forest_best_fit}
+bike_forest_final <- bike_forest_workflow |>
+  finalize_workflow(bike_forest_best_params) |>
+  last_fit(bike_split,
+           metrics = metric_set(rmse, mae))
+
+bike_forest_metrics <- bike_forest_final |> collect_metrics()
+
+bike_forest_metrics
+```
+
+Finally, we plot the variables by levels of importance to the model.
+
+```{r forest_plot}
+# Source - https://stackoverflow.com/a/72680901
+# Posted by Julia Silge
+# Retrieved 2026-07-27, License - CC BY-SA 4.0
+# Also Merilyn Thomas
+
+bike_forest_final_model <- bike_forest_final |>
+  extract_workflow() |>
+  extract_fit_engine()
+
+bike_forest_importance <- bike_forest_final_model$variable.importance |> 
+  sort(decreasing = TRUE)
+
+# Tibble for plotting
+bike_forest_importance_df <- tibble(
+  variable = names(bike_forest_importance),
+  importance = bike_forest_importance
+)
+
+bike_forest_importance_df |> 
+  ggplot(aes(x = reorder(variable, importance), y = importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Random Forest Variable Importance",
+       x = "Variables",
+       y = "Importance")
+```
 
 # Conclusion
 We now compare the RMSE and MAE for all the models.
+
+```{r model_comparisons}
+model_metrics <- rbind(
+  bike_best_mlr_metrics |> mutate(Model = "MLR", .before = 1),
+  bike_lasso_metrics |> mutate(Model = "LASSO", .before = 1),
+  bike_tree_metrics |> mutate(Model = "Tree", .before = 1),
+  bike_bag_metrics |> mutate(Model = "Bagged", .before = 1),
+  bike_forest_metrics |> mutate(Model = "Forest", .before = 1)
+)
+
+model_metrics
+```
+
+We see the random forest model is the best fit for our data, so now we finish by fitting it to the entire data set.
+
+```{r ultimate_model}
+bike_final_workflow <- bike_forest_workflow |>
+  finalize_workflow(bike_forest_best_params)
+
+bike_final_fit <- bike_final_workflow |>
+  fit(data = bike_data)
+
+bike_final_model <- bike_final_fit |>
+  extract_fit_engine()
+
+bike_final_model
+```
+
+We see this model is accurate with an $R^2 \approx 0.9244$.

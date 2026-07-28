@@ -26,3 +26,6 @@ Matrix
 glmnet
 rpart
 rpart.plot
+baguette
+future
+ranger
